@@ -1,0 +1,226 @@
+## 🇧🇷 Sao Paulo ##
+
+<div style="padding:15px;background:white;box-shadow:0 2px 8px rgba(0,0,0,0.1);margin-bottom:10px;border-radius:8px;">
+  <div style="display:flex;gap:15px;align-items:center;font-family:Arial;flex-wrap:wrap;">
+    <label style="display:flex;align-items:center;gap:8px;font-weight:bold;background:#f0f0f0;padding:8px 15px;border-radius:20px;cursor:pointer;">
+      <input type="checkbox" id="toggleView" onchange="switchView()" style="cursor:pointer;">
+      Vistas do bairro
+    </label>
+    
+    <div id="filterControls" style="display:flex;gap:15px;align-items:center;">
+      <label style="font-weight:bold;">Quartos:</label>
+      <select id="filterChambres" style="padding:8px;border-radius:4px;border:1px solid #ccc;">
+        <option value="">Todos</option>
+        <option value="Studio">Studio</option>
+        <option value="1">1 chambre</option>
+        <option value="2">2 chambres</option>
+        <option value="3">3 chambres</option>
+      </select>
+      
+      <label style="font-weight:bold;margin-left:20px;">Bairro:</label>
+      <select id="filterBairro" style="padding:8px;border-radius:4px;border:1px solid #ccc;">
+        <option value="">Todos</option>
+      </select>
+      
+      <button onclick="applyFilters()" style="padding:8px 20px;background:#3388ff;color:white;border:none;border-radius:4px;cursor:pointer;font-weight:bold;">Filtro</button>
+      <span id="resultCount" style="margin-left:15px;color:#666;"></span>
+    </div>
+  </div>
+</div>
+
+<div id="map" style="height: 600px; width: 100%;"></div>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script>
+var map, allMarkers = [], allData = [], distritosLayer, viewMode = 'points';
+
+setTimeout(function() {
+  map = L.map('map').setView([-23.5505, -46.6333], 11);
+  
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+  
+  var AIRTABLE_TOKEN = 'YOUR TOKEN';
+  var BASE_ID = 'YOUR BASE';
+  
+  console.log('Chargement données...');
+  
+  fetch('https://api.airtable.com/v0/' + BASE_ID + '/listings?maxRecords=100', {
+    headers: {'Authorization': 'Bearer ' + AIRTABLE_TOKEN}
+  })
+  .then(function(response) {
+    return response.json();
+  })
+  .then(function(data) {
+    console.log('Annonces:', data.records.length);
+    allData = data.records;
+    
+    var bairros = new Set();
+    data.records.forEach(function(r) {
+      if (r.fields.BAIRRO) bairros.add(r.fields.BAIRRO);
+    });
+    var selectBairro = document.getElementById('filterBairro');
+    Array.from(bairros).sort().forEach(function(b) {
+      var option = document.createElement('option');
+      option.value = b;
+      option.textContent = b;
+      selectBairro.appendChild(option);
+    });
+    
+    renderMarkers(data.records);
+    loadDistritos();
+  })
+  .catch(function(err) {
+    console.error('Erreur:', err);
+  });
+  
+  var legend = L.control({position: 'bottomright'});
+  legend.onAdd = function() {
+    var div = L.DomUtil.create('div', 'legend');
+    div.innerHTML = '<h4>Prix</h4><i style="background:#d73027"></i> > R$ 2700<br><i style="background:#fc8d59"></i> R$ 2400-2700<br><i style="background:#fee08b"></i> R$ 2100-2400<br><i style="background:#91cf60"></i> < R$ 2100';
+    return div;
+  };
+  legend.addTo(map);
+  
+}, 1500);
+
+function loadDistritos() {
+  console.log('Chargement GeoJSON distritos...');
+  fetch('https://raw.githubusercontent.com/codigourbano/distritos-sp/master/distritos-sp.geojson')
+    .then(function(response) { return response.json(); })
+    .then(function(geojson) {
+      console.log('Distritos chargés:', geojson.features.length);
+      distritosLayer = L.geoJSON(geojson, {
+        style: function() {
+          return {color: '#999', weight: 2, fillOpacity: 0};
+        },
+        onEachFeature: function(feature, layer) {
+          var nome = feature.properties.ds_nome || feature.properties.name;
+          if (nome) {
+            var stats = calculateDistritoStats(nome);
+            if (stats.count > 0) {
+              var color = getColorForPrice(stats.avgPrix);
+              layer.setStyle({fillColor: color, fillOpacity: 0.6});
+              layer.bindPopup('<div style="padding:10px;font-family:Arial;"><b style="font-size:18px;">' + nome + '</b><br><span style="color:#666;">' + stats.count + ' annonces</span><br><b style="font-size:16px;color:' + color + ';">Prix moyen: R$ ' + Math.round(stats.avgPrix) + '</b><br><span style="color:#666;">Chambres moyen: ' + stats.avgChambres.toFixed(1) + '</span><br><span style="color:#666;">Surface moy: ' + Math.round(stats.avgSurface) + 'm²</span></div>');
+            }
+          }
+        }
+      });
+    })
+    .catch(function(err) {
+      console.error('Erreur GeoJSON:', err);
+    });
+}
+
+function calculateDistritoStats(distritoName) {
+  var matches = allData.filter(function(r) {
+    return r.fields.BAIRRO && r.fields.BAIRRO.toLowerCase().includes(distritoName.toLowerCase());
+  });
+  
+  if (matches.length === 0) return {count: 0};
+  
+  var sumPrix = 0, sumChambres = 0, sumSurface = 0, countChambres = 0, countSurface = 0;
+  matches.forEach(function(r) {
+    var f = r.fields;
+    if (f.PRIX) sumPrix += f.PRIX;
+    if (f.Chambres) { sumChambres += parseFloat(f.Chambres) || 0; countChambres++; }
+    if (f.SURFACE_M2) { sumSurface += f.SURFACE_M2; countSurface++; }
+  });
+  
+  return {
+    count: matches.length,
+    avgPrix: sumPrix / matches.length,
+    avgChambres: countChambres > 0 ? sumChambres / countChambres : 0,
+    avgSurface: countSurface > 0 ? sumSurface / countSurface : 0
+  };
+}
+
+function getColorForPrice(prix) {
+  return prix > 2700 ? '#d73027' : prix > 2400 ? '#fc8d59' : prix > 2100 ? '#fee08b' : '#91cf60';
+}
+
+function switchView() {
+  var checked = document.getElementById('toggleView').checked;
+  viewMode = checked ? 'distritos' : 'points';
+  
+  if (viewMode === 'distritos') {
+    allMarkers.forEach(function(m) { map.removeLayer(m); });
+    if (distritosLayer) map.addLayer(distritosLayer);
+    document.getElementById('filterControls').style.display = 'none';
+    document.getElementById('resultCount').textContent = '';
+  } else {
+    if (distritosLayer) map.removeLayer(distritosLayer);
+    renderMarkers(allData);
+    document.getElementById('filterControls').style.display = 'flex';
+  }
+}
+
+function renderMarkers(records) {
+  allMarkers.forEach(function(m) { map.removeLayer(m); });
+  allMarkers = [];
+  
+  var count = 0;
+  records.forEach(function(r) {
+    var f = r.fields;
+    if (f.LAT && f.LONG && f.PRIX) {
+      count++;
+      var color = getColorForPrice(f.PRIX);
+      
+      var marker = L.circleMarker([f.LAT, f.LONG], {
+        radius: 8,
+        fillColor: color,
+        color: 'white',
+        weight: 2,
+        fillOpacity: 0.9
+      }).addTo(map);
+      
+      var popup = '<div style="padding:8px;font-family:Arial;"><b style="font-size:16px;">' + (f.BAIRRO || 'São Paulo') + '</b><br><span style="color:#666;">' + (f.Chambres || '?') + ' chambres - ' + (f.SURFACE_M2 || '?') + 'm²</span><br><b style="font-size:18px;color:' + color + ';">R$ ' + f.PRIX + '</b></div>';
+      marker.bindPopup(popup);
+      allMarkers.push(marker);
+    }
+  });
+  
+  document.getElementById('resultCount').textContent = count + ' annonces';
+}
+
+function applyFilters() {
+  if (viewMode === 'distritos') return;
+  
+  var filterChambres = document.getElementById('filterChambres').value;
+  var filterBairro = document.getElementById('filterBairro').value;
+  
+  var filtered = allData.filter(function(r) {
+    var f = r.fields;
+    var matchChambres = !filterChambres || String(f.Chambres) === filterChambres;
+    var matchBairro = !filterBairro || f.BAIRRO === filterBairro;
+    return matchChambres && matchBairro;
+  });
+  
+  renderMarkers(filtered);
+}
+</script>
+
+<style>
+.legend {
+  padding: 12px;
+  background: white;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+  border-radius: 8px;
+  line-height: 24px;
+  font-family: Arial;
+}
+.legend i {
+  width: 20px;
+  height: 20px;
+  float: left;
+  margin-right: 10px;
+  border-radius: 50%;
+  border: 2px solid white;
+}
+.legend h4 {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: bold;
+}
+</style>
