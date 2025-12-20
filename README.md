@@ -3,7 +3,7 @@ Interactive rental price maps for multiple cities (São Paulo, Montpellier,etc)
 --
 # 🗺️ Rent Price Mapper
 
-https://emil89736.softr.app
+https://rentmap.softr.app/
 
 ## 🌍 Supported Cities
 
