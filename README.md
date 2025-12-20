@@ -1,4 +1,4 @@
-# rent-price-mapper
+# RENT MAP
 Interactive rental price maps for multiple cities (São Paulo, Montpellier,etc)
 --
 # 🗺️ Rent Price Mapper
